@@ -29,14 +29,9 @@ def cutlass_fp8_supported() -> bool:
     return ops.cutlass_scaled_mm_supports_fp8(capability)
 
 def get_next_power_of_2(x: float) -> float:
-    """Get the next power of 2 that is greater than or equal to x."""
     return 2 ** math.ceil(math.log2(x))
 
 def clip_large_values(dequantized_tensor: torch.Tensor, max_val: float) -> torch.Tensor:
-    """
-    Clip values in the dequantized tensor that would exceed max_val when quantized.
-    Clips both positive and negative values that would exceed the max_val threshold.
-    """
     return torch.clamp(dequantized_tensor, min=-max_val, max=max_val)
 
 def per_tensor_dequantize(
@@ -81,10 +76,11 @@ def convert_to_channelwise(
 def requantize_with_max_scale(
         weight: torch.Tensor, weight_scale: torch.Tensor,
         logical_widths: List[int]) -> Tuple[torch.Tensor, torch.Tensor]:
+    # breakpoint()
     # Max scale to be used for requanitzation.
     max_w_scale = weight_scale.max()
 
-    quant_mode = os.getenv('FP8_QUANT_MODE', 'SCALE_ADJUST')  # Default to mode 1
+    quant_mode = os.getenv('FP8_QUANT_MODE', 'SCALE_ADJUST')  
     
     
     if current_platform.is_hpu() and htexp._get_device_type() == htexp.synDeviceType.synDeviceGaudi2:
@@ -92,7 +88,7 @@ def requantize_with_max_scale(
                       torch.finfo(torch.float8_e4m3fnuz).max)
         
         if quant_mode == 'SCALE_ADJUST':
-            # Mode 1: Existing behavior - adjust scale
+            # Mode 1: adjust scale
             max_w_scale = max_w_scale * scale_ratio
         
         elif quant_mode == 'SCALE_ADJUST_POW2':
