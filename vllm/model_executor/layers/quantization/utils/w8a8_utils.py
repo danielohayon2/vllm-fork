@@ -5,6 +5,8 @@ import torch
 from vllm import _custom_ops as ops
 from vllm.platforms import current_platform
 from vllm.utils import is_hip
+import os
+import math
 
 # Input scaling factors are no longer optional in _scaled_mm starting
 # from pytorch 2.5. Allocating a dummy tensor to pass as input_scale
@@ -26,6 +28,16 @@ def cutlass_fp8_supported() -> bool:
 
     return ops.cutlass_scaled_mm_supports_fp8(capability)
 
+def get_next_power_of_2(x: float) -> float:
+    """Get the next power of 2 that is greater than or equal to x."""
+    return 2 ** math.ceil(math.log2(x))
+
+def clip_large_values(dequantized_tensor: torch.Tensor, max_val: float) -> torch.Tensor:
+    """
+    Clip values in the dequantized tensor that would exceed max_val when quantized.
+    Clips both positive and negative values that would exceed the max_val threshold.
+    """
+    return torch.clamp(dequantized_tensor, min=-max_val, max=max_val)
 
 def per_tensor_dequantize(
         tensor: torch.Tensor, inv_scale: Union[float,
@@ -71,16 +83,24 @@ def requantize_with_max_scale(
         logical_widths: List[int]) -> Tuple[torch.Tensor, torch.Tensor]:
     # Max scale to be used for requanitzation.
     max_w_scale = weight_scale.max()
-    if current_platform.is_hpu() and htexp._get_device_type(
-    ) == htexp.synDeviceType.synDeviceGaudi2:
-        max_w_scale = max_w_scale * (torch.finfo(torch.float8_e4m3fn).max /
-                                     torch.finfo(torch.float8_e4m3fnuz).max)
-    # QKV / MLP is fused in the on disk checkpoint if any of the
-    # weight scales are still set to the default since we initialize
-    # N weight scales for N shards but we only load 1 weight scale
-    # from disk in this case. Skip requantization in this case (since)
-    # we already are quantized with the single scale.
-    # * Sample Model: nm-testing/Phi-3-mini-128k-instruct-FP8
+
+    quant_mode = os.getenv('FP8_QUANT_MODE', 'SCALE_ADJUST')  # Default to mode 1
+    
+    
+    if current_platform.is_hpu() and htexp._get_device_type() == htexp.synDeviceType.synDeviceGaudi2:
+        scale_ratio = (torch.finfo(torch.float8_e4m3fn).max / 
+                      torch.finfo(torch.float8_e4m3fnuz).max)
+        
+        if quant_mode == 'SCALE_ADJUST':
+            # Mode 1: Existing behavior - adjust scale
+            max_w_scale = max_w_scale * scale_ratio
+        
+        elif quant_mode == 'SCALE_ADJUST_POW2':
+            # Mode 2: Adjust scale and round to next power of 2
+            adjusted_scale = max_w_scale * scale_ratio
+            max_w_scale = get_next_power_of_2(adjusted_scale)
+    
+    # Check if module is unfused in checkpoint
     unfused_module_in_checkpoint = (weight_scale[-1] > torch.finfo(
         torch.float8_e4m3fn).min)
 
@@ -91,6 +111,12 @@ def requantize_with_max_scale(
             end = start + logical_width
             weight_dq = per_tensor_dequantize(weight[start:end, :],
                                               weight_scale[idx])
+            
+            if quant_mode == 'CLIP_LARGE_VALUES':
+                # Clip values that would exceed max_val after quantization
+                max_dequant_val = torch.finfo(torch.float8_e4m3fnuz).max * max_w_scale
+                weight_dq = clip_large_values(weight_dq, max_dequant_val)
+                
             weight[start:end, :], _ = ops.scaled_fp8_quant(
                 weight_dq, max_w_scale)
             start = end
