@@ -28,8 +28,9 @@ def cutlass_fp8_supported() -> bool:
 
     return ops.cutlass_scaled_mm_supports_fp8(capability)
 
-def get_next_power_of_2(x: float) -> float:
-    return 2 ** math.ceil(math.log2(x))
+def get_next_power_of_2(x: torch.Tensor) -> torch.Tensor:
+    power = math.ceil(math.log2(x.item()))
+    return torch.tensor(2.0 ** power, device=x.device, dtype=x.dtype)
 
 def clip_large_values(dequantized_tensor: torch.Tensor, max_val: float) -> torch.Tensor:
     return torch.clamp(dequantized_tensor, min=-max_val, max=max_val)
@@ -75,7 +76,7 @@ def convert_to_channelwise(
 
 def requantize_with_max_scale(
         weight: torch.Tensor, weight_scale: torch.Tensor,
-        logical_widths: List[int]) -> Tuple[torch.Tensor, torch.Tensor]:
+        logical_widths: List[int], input_scale: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     # breakpoint()
     # Max scale to be used for requanitzation.
     max_w_scale = weight_scale.max()
@@ -87,6 +88,7 @@ def requantize_with_max_scale(
         scale_ratio = (torch.finfo(torch.float8_e4m3fn).max / 
                       torch.finfo(torch.float8_e4m3fnuz).max)
         
+        input_scale *= scale_ratio
         if quant_mode == 'SCALE_ADJUST':
             # Mode 1: adjust scale
             max_w_scale = max_w_scale * scale_ratio
@@ -117,7 +119,7 @@ def requantize_with_max_scale(
                 weight_dq, max_w_scale)
             start = end
 
-    return max_w_scale, weight
+    return max_w_scale, weight, input_scale
 
 
 def apply_fp8_linear(

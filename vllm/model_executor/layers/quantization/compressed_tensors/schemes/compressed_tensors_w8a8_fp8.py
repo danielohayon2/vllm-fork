@@ -37,10 +37,11 @@ class CompressedTensorsW8A8Fp8(CompressedTensorsScheme):
         # tensor scales (thus N scales being passed to the kernel),
         # requantize so we can always run per tensor
         if self.strategy == QuantizationStrategy.TENSOR:
-            max_w_scale, weight = requantize_with_max_scale(
+            max_w_scale, weight, input_scale = requantize_with_max_scale(
                 weight=layer.weight,
                 weight_scale=layer.weight_scale,
                 logical_widths=layer.logical_widths,
+                input_scale=layer.input_scale
             )
 
             if is_hip():
@@ -52,6 +53,8 @@ class CompressedTensorsW8A8Fp8(CompressedTensorsScheme):
                     layer.input_scale = Parameter(input_scale,
                                                   requires_grad=False)
 
+            # layer.input_scale = Parameter(input_scale,
+            #                                       requires_grad=False)
             layer.weight = Parameter(weight.t(), requires_grad=False)
             layer.weight_scale = Parameter(max_w_scale, requires_grad=False)
 
